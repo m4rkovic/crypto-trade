@@ -1,0 +1,55 @@
+system:
+  app_name: "AlphaArb_Fleet_v2"
+  environment: "testnet" # 'live' or 'testnet'
+  log_level: "INFO"
+  
+performance:
+  network_timeout_ms: 2000
+  poll_interval: 0.1     # Fast tick rate
+
+# POOL OF ASSETS TO CHOOSE FROM
+# You will select which ones to trade at startup
+supported_coins:
+  - "SOL/USDT"
+  - "BTC/USDT"
+  - "ETH/USDT"
+  - "DOGE/USDT"
+  - "XRP/USDT"
+  - "ADA/USDT"
+  - "MATIC/USDT"
+  - "LTC/USDT"
+  - "DOT/USDT"
+  - "SHIB/USDT"
+
+target:
+  # Default Trade Size ($ USD)
+  sizing_type: "fixed_quote"
+  sizing_amount: 50.0 
+
+risk_compliance:
+  min_spread_bps: 40
+  max_data_age_seconds: 1.0
+  max_exposure_per_trade_usd: 500.0
+  max_daily_drawdown_usd: 50.0
+  max_consecutive_failures: 3
+
+audit:
+  trade_log: "data/trade_audit.csv"
+
+# EXCHANGE CREDENTIALS
+exchanges:
+  binance:
+    api_key: "yk7qBHeUkPsS5c7yXrWZagTaq8SCqkJ2wzBYQi8Ir8zIXYXJAnOWxpzp7mkc7N3s"
+    secret: "BXxIjndQgYbhgOWwMyLovBqSSFw1SlynP3K07cajBI6XSeKoVyszIKUjzlNJNq93"
+    fee_rate: 0.001
+
+  okx:
+    api_key: ""
+    secret: ""
+    password: "" # OKX requires a password
+    fee_rate: 0.001
+
+  bybit:
+    api_key: "kAfq3Ng5F3DeRCsN6p"
+    secret: "vlOVXLqxiepnFjofkbQSU34JK3jUrep0lkuf"
+    fee_rate: 0.001
