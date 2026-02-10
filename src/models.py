@@ -4,9 +4,6 @@ from enum import Enum
 import time
 
 class TradeStatus(Enum):
-    """
-    Enum representing the lifecycle states of a trade.
-    """
     PENDING = "PENDING"
     FILLED = "FILLED"
     FAILED = "FAILED"
@@ -16,8 +13,8 @@ class TradeStatus(Enum):
 @dataclass(slots=True)
 class TickerData:
     """
-    Immutable data structure for market snapshots.
-    Using __slots__ for memory efficiency in high-frequency loops.
+    Sadrži podatke o ceni.
+    'received_at' je vreme kad je stiglo u naš sistem (za merenje internog laga).
     """
     exchange: str
     symbol: str
@@ -26,24 +23,25 @@ class TickerData:
     ask_price: float
     ask_vol: float
     timestamp: float 
+    received_at: float = field(default_factory=time.time)
 
     @property
     def age(self) -> float:
-        """Returns the age of the data in seconds."""
+        """Koliko je star podatak u odnosu na trenutno vreme."""
         return time.time() - self.timestamp
 
 @dataclass(slots=True)
 class Opportunity:
     """
-    Represents a qualified arbitrage signal passed from Strategy to Execution.
+    Signal za egzekuciju.
     """
     id: str
-    symbol: str  # <--- NEW FIELD: Tracks which coin (e.g., SOL/USDT)
+    symbol: str
     buy_ex: str
     sell_ex: str
     buy_price: float
     sell_price: float
     quantity: float
     gross_spread_bps: float
-    net_profit_usd: float
+    est_profit_usd: float
     timestamp: float

@@ -1,14 +1,12 @@
 # main.py
 import asyncio
 import yaml
-import time
 import sys
+import signal
 import questionary
-from datetime import datetime
 from rich.live import Live
 from rich.table import Table
 from rich.layout import Layout
-from rich.console import Console
 from rich.panel import Panel
 
 # Import Engines
@@ -18,197 +16,153 @@ from src.websocket_engine import WebSocketEngine
 from src.risk_engine import RiskEngine
 from src.execution import ExecutionService
 from src.inventory import InventoryEngine
-from src.models import Opportunity
+from src.strategy import StrategyEngine 
 
-# --- UI HELPER FUNCTIONS ---
+# Global shutdown event
+shutdown_event = asyncio.Event()
+
+def handle_signal():
+    print("\n🛑 Signal received. Shutting down...")
+    shutdown_event.set()
 
 def startup_selection(config):
     """Interactive CLI to select coins and exchanges."""
-    print("\n🚀 ALPHA ARB FLEET COMMAND \n")
-    coins = questionary.checkbox("Select Assets to Trade:", choices=config['supported_coins']).ask()
+    print("\n🚀 ALPHA ARB FLEET V3 (EVENT DRIVEN) \n")
+    
+    # 1. Select Coins
+    coins = questionary.checkbox(
+        "Select Assets to Trade:", 
+        choices=config['supported_coins']
+    ).ask()
+    
     if not coins:
         print("No coins selected. Exiting.")
         sys.exit()
 
+    # 2. Select Exchanges
     avail_exchanges = list(config['exchanges'].keys())
-    exchanges = questionary.checkbox("Select Exchanges to Activate:", choices=avail_exchanges).ask()
+    exchanges = questionary.checkbox(
+        "Select Exchanges to Activate:", 
+        choices=avail_exchanges
+    ).ask()
+    
     if len(exchanges) < 2:
         print("Need at least 2 exchanges for arbitrage. Exiting.")
         sys.exit()
+        
     return coins, exchanges
 
-def generate_dashboard(inventory, ws_engine, active_coins, active_exchanges):
+async def ui_updater(risk, strategy, inventory):
     """
-    Creates the Rich Console Dashboard layout.
-    Shows Live Prices, Inventory, and Total Net Worth.
+    Napredniji UI task koji prikazuje cene i profit u realnom vremenu.
     """
-    
-    # 1. Price Table
-    price_table = Table(title="📡 Live Market Feed")
-    price_table.add_column("Asset", style="cyan")
-    price_table.add_column("Price (USD)", justify="right", style="green")
-    
-    prices = ws_engine.get_all_prices()
-    for coin in active_coins:
-        base = coin.split('/')[0]
-        p = prices.get(base, 0.0)
-        price_table.add_row(base, f"${p:,.2f}")
+    def generate_dashboard():
+        layout = Layout()
+        layout.split_column(Layout(name="top"), Layout(name="bottom"))
+        
+        # Tabela 1: Performanse
+        perf_table = Table(title="📊 Performance")
+        perf_table.add_column("Metric", style="cyan")
+        perf_table.add_column("Value", style="green")
+        perf_table.add_row("Daily PnL", f"${risk.daily_pnl:.2f}")
+        perf_table.add_row("Fails / KillSwitch", f"{risk.consecutive_fails} / {risk.kill_switch}")
+        
+        # Tabela 2: Live Cene (Iz Strategy Cache-a)
+        price_table = Table(title="⚡ Live Market Feed (Event Driven)")
+        price_table.add_column("Asset", style="bold yellow")
+        price_table.add_column("Prices (Ask)", style="white")
+        
+        # Iteriramo kroz podatke koje Strategija vidi
+        for symbol, data in strategy.market_cache.items():
+            prices = []
+            for ex_name, ticker in data.items():
+                prices.append(f"{ex_name.upper()}: {ticker.ask_price:.2f}")
+            price_table.add_row(symbol, " | ".join(prices))
 
-    # 2. Inventory Table
-    inv_table = Table(title="💰 Portfolio Composition")
-    inv_table.add_column("Exchange", style="magenta")
-    inv_table.add_column("USDT", justify="right", style="green")
-    inv_table.add_column("Coins Held", justify="right")
-    
-    total_worth = inventory.get_grand_total_usd(prices)
-    
-    for ex in active_exchanges:
-        data = inventory.state.get(ex, {})
-        usdt = data.get('USDT', 0.0)
+        layout["top"].split_row(
+            Layout(Panel(perf_table)), 
+            Layout(Panel(price_table))
+        )
+        layout["bottom"].update(Panel(f"[bold]Active Strategy:[/bold] Monitoring {len(strategy.market_cache)} assets..."))
         
-        # --- FIX: Truncate the list of coins to prevent UI breaking ---
-        # Filter out USDT and empty balances
-        non_usdt = {k:v for k,v in data.items() if k != 'USDT' and v > 0}
-        
-        # Take only the first 5 coins
-        display_items = list(non_usdt.items())[:5]
-        others_count = len(non_usdt) - 5
-        
-        # Format the string
-        others_str = ", ".join([f"{k}:{v:.2f}" for k,v in display_items])
-        
-        if others_count > 0:
-            others_str += f", [dim]+{others_count} others[/dim]"
-            
-        inv_table.add_row(ex.upper(), f"${usdt:,.2f}", others_str if others_str else "-")
-        # -------------------------------------------------------------
+        return layout
 
-    # Layout Construction
-    layout = Layout()
-    layout.split_column(
-        Layout(name="top"),
-        Layout(name="bottom")
+    with Live(generate_dashboard(), refresh_per_second=2) as live:
+        while not shutdown_event.is_set():
+            live.update(generate_dashboard())
+            await asyncio.sleep(0.5)
+
+async def main(config):
+    # Logger
+    logger = setup_console_logger("AlphaArb", config['system']['log_level'])
+    audit = AsyncAuditLogger(config['audit']['trade_log'])
+    await audit.start()
+
+    # 1. Initialize Engines
+    market = MarketEngine(config, logger)
+    risk = RiskEngine(config, logger)
+    inventory = InventoryEngine(market.exchanges, logger)
+    
+    # 2. REST Connection & Initial Sync
+    logger.info("Initializing REST API...")
+    if not await market.initialize():
+        logger.error("REST Initialization failed.")
+        return
+
+    logger.info("Syncing Wallet Balances...")
+    await inventory.sync_balances()
+    asyncio.create_task(inventory.run_loop())
+
+    # 3. Execution Service
+    execution = ExecutionService(market.exchanges, logger, config)
+
+    # 4. Strategy Engine (The Brain)
+    strategy = StrategyEngine(config, risk, inventory, execution, logger)
+
+    # 5. WebSocket Engine (The Eyes)
+    # We pass the strategy callback directly to WS Engine
+    ws_engine = WebSocketEngine(
+        list(config['exchanges'].keys()),
+        config['supported_coins'],
+        logger,
+        strategy.on_ticker_update 
     )
+
+    # Start WS
+    asyncio.create_task(ws_engine.start())
+
+    # Start UI (Non-blocking)
+    ui_task = asyncio.create_task(ui_updater(risk, strategy, inventory))
+
+    logger.info("🚀 BOT IS LIVE. Press Ctrl+C to stop.")
     
-    layout["top"].split_row(
-        Layout(Panel(price_table)),
-        Layout(Panel(inv_table))
-    )
+    # Wait for shutdown signal
+    loop = asyncio.get_running_loop()
+    try:
+        loop.add_signal_handler(signal.SIGINT, handle_signal)
+        loop.add_signal_handler(signal.SIGTERM, handle_signal)
+    except NotImplementedError:
+        pass
     
-    footer = Panel(f"[bold gold1]GRAND TOTAL NET WORTH: ${total_worth:,.2f}[/bold gold1]", style="white on blue")
-    layout["bottom"].update(footer)
-    layout["bottom"].size = 3
-    
-    return layout
+    await shutdown_event.wait()
 
-# --- MAIN CONTROLLER ---
-
-class HedgeFundBot:
-    def __init__(self, selected_coins, selected_exchanges):
-        self.coins = selected_coins
-        self.ex_names = selected_exchanges
-        self.config = self._load_config()
-        self.config['exchanges'] = {k:v for k,v in self.config['exchanges'].items() if k in self.ex_names}
-        
-        self.audit_log = AsyncAuditLogger(self.config['audit']['trade_log'])
-        self.logger = setup_console_logger("AlphaArb", "ERROR") 
-
-        self.ws_engine = WebSocketEngine(self.ex_names, self.coins, self.logger)
-        self.rest_engine = MarketEngine(self.config, self.logger)
-        self.risk = RiskEngine(self.config, self.logger)
-        self.inventory = None
-        self.executor = None
-        self.target_amt = self.config['target']['sizing_amount']
-
-    def _load_config(self):
-        with open("config.yaml", "r") as f: return yaml.safe_load(f)
-
-    def calculate_size(self, price: float) -> float:
-        return self.target_amt / price
-
-    async def run(self):
-        try:
-            print("Initializing Diagnostic Checks...")
-            await self.audit_log.start()
-            is_healthy = await self.rest_engine.initialize()
-            if not is_healthy:
-                print("❌ Diagnostic Failed. Check API Keys.")
-                return
-
-            await self.ws_engine.start()
-            self.inventory = InventoryEngine(self.rest_engine.exchanges, self.logger)
-            asyncio.create_task(self.inventory.run_loop())
-            
-            print("Synchronizing Inventory...")
-            while not self.inventory.is_ready: await asyncio.sleep(0.1)
-
-            self.executor = ExecutionService(self.rest_engine.exchanges, self.logger, self.config)
-
-            console = Console()
-            with Live(console=console, refresh_per_second=4) as live:
-                while not self.risk.kill_switch:
-                    start_tick = time.time()
-                    live.update(generate_dashboard(self.inventory, self.ws_engine, self.coins, self.ex_names))
-
-                    for coin in self.coins:
-                        snapshots = self.ws_engine.get_snapshot(coin)
-                        if len(snapshots) < 2: continue
-                        
-                        for buy_snap in snapshots:
-                            for sell_snap in snapshots:
-                                if buy_snap.exchange == sell_snap.exchange: continue
-                                
-                                if not self.risk.validate_market_data(buy_snap) or \
-                                   not self.risk.validate_market_data(sell_snap):
-                                    continue
-
-                                buy_price = buy_snap.ask_price
-                                sell_price = sell_snap.bid_price
-                                if sell_price <= buy_price: continue
-
-                                size = self.calculate_size(buy_price)
-                                spread_bps = ((sell_price - buy_price) / buy_price) * 10000
-                                
-                                # --- FIX: Pass symbol=coin into Opportunity ---
-                                opp = Opportunity(
-                                    id=f"{int(time.time()*1000)}",
-                                    symbol=coin, # <--- NEW: Ensures execution.py knows what to trade
-                                    buy_ex=buy_snap.exchange, sell_ex=sell_snap.exchange,
-                                    buy_price=buy_price, sell_price=sell_price,
-                                    quantity=size, gross_spread_bps=spread_bps,
-                                    net_profit_usd=(sell_price - buy_price) * size,
-                                    timestamp=time.time()
-                                )
-
-                                if self.risk.pre_trade_check(opp):
-                                    base_coin = coin.split('/')[0]
-                                    has_quote = self.inventory.check_liquidity(opp.buy_ex, 'USDT', opp.quantity * opp.buy_price)
-                                    has_base = self.inventory.check_liquidity(opp.sell_ex, base_coin, opp.quantity)
-                                    
-                                    if has_quote and has_base:
-                                        success, pnl = await self.executor.execute_atomic(opp)
-                                        self.risk.record_execution_result(success, pnl)
-                                        await self.audit_log.log_trade([datetime.utcnow().isoformat(), opp.id, success, pnl])
-
-                    elapsed = time.time() - start_tick
-                    await asyncio.sleep(max(0, 0.1 - elapsed))
-        finally:
-            print("Shutting down resources...")
-            await self.ws_engine.shutdown()
-            await self.rest_engine.shutdown()
+    # Cleanup
+    logger.info("Shutting down engines...")
+    await ws_engine.shutdown()
+    await market.shutdown()
 
 if __name__ == "__main__":
-    with open("config.yaml", "r") as f:
-        raw_conf = yaml.safe_load(f)
-    try:
-        sel_coins, sel_exs = startup_selection(raw_conf)
-        bot = HedgeFundBot(sel_coins, sel_exs)
-        try:
-            import uvloop 
-            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
-        except ImportError:
-            pass
-        asyncio.run(bot.run())
-    except KeyboardInterrupt:
-        print("\n🛑 Bot Stopped by User.")
-        sys.exit()
+    # 1. Load Config FIRST
+    with open("config.yaml", "r") as f: 
+        raw_config = yaml.safe_load(f)
+    
+    # 2. Interactive Selection (RUNS SYNCHRONOUSLY BEFORE ASYNC LOOP)
+    selected_coins, selected_exchanges = startup_selection(raw_config)
+    
+    # 3. Prepare Config
+    config = raw_config.copy()
+    config['supported_coins'] = selected_coins
+    config['exchanges'] = {k:v for k,v in raw_config['exchanges'].items() if k in selected_exchanges}
+
+    # 4. Start Bot (Klasican asyncio run za Windows)
+    asyncio.run(main(config))
