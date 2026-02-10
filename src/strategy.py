@@ -1,7 +1,7 @@
 # src/strategy.py
 import time
 import asyncio
-from typing import Dict
+from typing import Dict, Optional
 from .models import TickerData, Opportunity
 from .risk_engine import RiskEngine
 from .inventory import InventoryEngine
@@ -27,23 +27,23 @@ class StrategyEngine:
 
     async def on_ticker_update(self, ticker: TickerData):
         """
-        Glavna petlja logike. Poziva se svaki put kad stigne cena sa BILO KOJE berze.
+        Glavna petlja logike. Poziva se svaki put kad stigne cena sa BILO KOJE berze (callback iz WS-a).
         """
-        # 1. Ažuriraj keš
+        # 1. Ažuriraj keš (Ovo je logika koja je pre bila u WebSocketEngine-u)
         if ticker.symbol not in self.market_cache:
             self.market_cache[ticker.symbol] = {}
         self.market_cache[ticker.symbol][ticker.exchange] = ticker
 
-        # 2. Proveri prilike za OVAJ coin (ne iteriraj kroz sve coinove, presporo)
+        # 2. Proveri prilike za OVAJ coin odmah
         await self.check_arbitrage(ticker.symbol)
 
     async def check_arbitrage(self, symbol: str):
         exchanges_data = self.market_cache.get(symbol, {})
+        # Trebaju nam bar 2 berze da bi imali šta da poredimo
         if len(exchanges_data) < 2:
             return
 
         # Uporedi sve parove berzi za ovaj coin
-        # O(N^2) ali N je malo (2-3 berze), tako da je zanemarljivo
         keys = list(exchanges_data.keys())
         for i in range(len(keys)):
             for j in range(len(keys)):
@@ -55,6 +55,11 @@ class StrategyEngine:
                 tick_a = exchanges_data[ex_a_name] # Potencijalni BUY
                 tick_b = exchanges_data[ex_b_name] # Potencijalni SELL
                 
+                # --- ZERO PRICE PROTECTION ---
+                # Ako je neka cena 0 (nema likvidnosti na testnetu), preskoci
+                if tick_a.ask_price <= 0 or tick_b.bid_price <= 0:
+                    continue
+
                 # --- RISK CHECK 1: DATA AGE ---
                 if not self.risk.validate_market_data(tick_a) or not self.risk.validate_market_data(tick_b):
                     continue
@@ -63,10 +68,11 @@ class StrategyEngine:
                 buy_price = tick_a.ask_price  # Kupujemo po Ask (skuplje)
                 sell_price = tick_b.bid_price # Prodajemo po Bid (jeftinije)
                 
+                # Ako je kupovna cena veća od prodajne, gubimo pare -> preskoči
                 if buy_price >= sell_price:
-                    continue # Nema profita ni u teoriji
+                    continue 
 
-                # Gross Spread (bez provizija)
+                # Gross Spread (bez provizija) u baznim poenima (bps)
                 spread_bps = ((sell_price - buy_price) / buy_price) * 10000
                 
                 # Veličina pozicije
@@ -74,7 +80,7 @@ class StrategyEngine:
                 est_profit = (sell_price - buy_price) * qty
                 
                 # --- FEES CALCULATION ---
-                # Pretpostavljamo 0.1% fee na obe strane (ukupno 0.2%) = 20 bps
+                # Pretpostavljamo 0.1% fee na obe strane (ukupno 0.2%)
                 fees_usd = (qty * buy_price * 0.001) + (qty * sell_price * 0.001)
                 net_profit = est_profit - fees_usd
 
@@ -91,7 +97,7 @@ class StrategyEngine:
                     sell_price=sell_price,
                     quantity=qty,
                     gross_spread_bps=spread_bps,
-                    est_profit_usd=net_profit,
+                    net_profit_usd=net_profit,
                     timestamp=time.time()
                 )
 
@@ -102,41 +108,35 @@ class StrategyEngine:
                     await self.execute_opportunity(opp)
 
     async def execute_opportunity(self, opp: Opportunity):
-        """
-        Orkestrira Liquidity Check i Execution.
-        """
+        """Orkestrira Liquidity Check i Execution."""
+        # 1. Update UI Status ODMAH
+        msg = f"ATTEMPT: Buy {opp.symbol} on {opp.buy_ex.upper()} @ ${opp.buy_price:.4f} -> Sell on {opp.sell_ex.upper()}"
+        self.risk.update_last_trade_status(msg)
+
         base_coin = opp.symbol.split('/')[0]
         quote_coin = 'USDT'
         
         # 1. OPTIMISTIC LIQUIDITY CHECK & LOCK
-        # Treba nam USDT na Buy exchange
+        # Koliko nam treba para?
         cost_usdt = opp.quantity * opp.buy_price
-        
-        # Treba nam COIN na Sell exchange
         cost_coin = opp.quantity
         
         has_usdt = self.inventory.reserve_liquidity(opp.buy_ex, quote_coin, cost_usdt)
         has_coin = self.inventory.reserve_liquidity(opp.sell_ex, base_coin, cost_coin)
         
         if has_usdt and has_coin:
-            # 2. ATOMIC EXECUTION
+            # 2. ATOMIC EXECUTION (Šaljemo ordere)
             success, pnl = await self.execution.execute_atomic(opp)
             
             # 3. POST-TRADE CLEANUP
             self.risk.record_execution_result(success, pnl)
             
             if not success:
-                # ROLLBACK ako nije uspelo
+                # ROLLBACK ako nije uspelo - vraćamo pare u inventory
                 self.inventory.rollback_liquidity(opp.buy_ex, quote_coin, cost_usdt)
                 self.inventory.rollback_liquidity(opp.sell_ex, base_coin, cost_coin)
-                self.logger.info("Liquidity Rolled Back.")
-            else:
-                # Ako je uspelo, Inventory Engine će se sam osvežiti pri sledećem sync-u (za 10s)
-                # ili možemo implementirati "commit" logiku, ali sync je sigurniji.
-                pass
         else:
-            # Nije bilo para, rollback ono što je uspelo da se lockuje
+            self.risk.update_last_trade_status(f"[yellow]SKIPPED[/yellow] | Insufficient Liquidity for {opp.symbol}")
+            # Nije bilo dovoljno para, rollback ono što je uspelo da se lockuje
             if has_usdt: self.inventory.rollback_liquidity(opp.buy_ex, quote_coin, cost_usdt)
             if has_coin: self.inventory.rollback_liquidity(opp.sell_ex, base_coin, cost_coin)
-            # Logujemo throttle da ne spama
-            # self.logger.debug(f"Insufficient funds for {opp.symbol}")
