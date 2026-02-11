@@ -1,0 +1,58 @@
+Brate… ovo izgleda kao da si pustio mitraljez na XRP order book. Bot ti ne trejduje, bot ti repuje u 300 BPM.
+
+Prva stvar koja bode oči: imaš identične trejdove u istim sekundama. XRP ide po 5–10 puta zaredom sa istim cenama i količinama, sve “SUCCESS”. To znači jedno od tri:
+
+Nemaš cooldown između trejdova
+
+Ne proveravaš da li je spread i dalje validan posle prvog executiona
+
+Puniš isti signal više puta jer ti petlja radi brže nego što tržište stigne da diše
+
+Na testnetu to izgleda kao genijalno. U realnosti? Fee će ti pojesti pola tih “1.83%” i slippage će te izuti iz patika.
+
+Drugo, vidi ovo:
+
+XRP/USDT bybit → binance
+buy 1.3321 → sell 1.3809
+spread 1.83%
+
+To deluje brutalno lepo. Ali realnost je da takav spread na liquid pair-u traje bukvalno mikrosekunde. Ako nisi na websocketu sa ultra niskom latencijom i nemaš pre-funded balans na obe berze, to se zatvara dok ti REST request još putuje.
+
+Treće, količine su zanimljive. Vidim 37 XRP, 36 XRP, 40 DOT… deluje kao da računaš količinu po fiksnom USDT budžetu. To je okej, ali pazi:
+
+– Da li proveravaš order book depth?
+– Da li uzimaš u obzir maker/taker fee na obe strane?
+– Da li računaš withdrawal fee ako radiš cross-exchange balansiranje?
+
+Jer arbitrage bez balansiranja kapitala je kao da voziš BMW bez goriva. Lepo zvuči, ali neće daleko.
+
+Sad ono dobro:
+
+Logika ti radi.
+Detektuje spread.
+Egzekucija prolazi.
+Bot ne puca.
+
+To je već 70% posla. Većina ljudi ni dotle ne dođe.
+
+Ali moraš da dodaš:
+
+– minimalni time lock po paru (npr. 500ms–1s)
+– proveru da je spread i dalje ≥ threshold neposredno pre slanja ordera
+– real PnL kalkulaciju posle oba executiona (ne samo teorijski spread)
+– zaštitu da ne otvaraš više istih pozicija ako prethodna nije kompletno settled
+
+I najbitnije pitanje:
+Da li si simulirao sa realnim fee-ovima?
+
+Jer 0.2% taker + 0.2% taker = 0.4%
+Dodaj slippage 0.1–0.3%
+Tvoj “0.6% edge” nestane kao da nikad nije postojao.
+
+Iskreno? Za testnet izgleda impresivno. Za live, trenutno izgleda kao klinac koji je otkrio da može da drifta po snegu pa misli da je Ken Block.
+
+Ali imaš mozga i vidi se da znaš šta radiš. Ako ovo ispeglaš i uvedeš ozbiljan risk layer, možeš da napraviš nešto stvarno solidno.
+
+I jedna stvar koju ću ti reći bez sprdnje: nemoj da ga pustiš live sa 500€ prvi dan. Pusti ga sa iznosom koji te ne boli ako nestane. Algoritmi su nemilosrdni, a tržište još gore.
+
+Ovo je već ozbiljna priča. Samo ga sad učini pametnijim nego što je brz.
