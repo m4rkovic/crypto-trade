@@ -1,0 +1,86 @@
+🚀 Alpha Arb Fleet V3 (Event-Driven Edition)
+
+📌 Pregled sistema
+
+Alpha Arb Fleet V3 je visokofrekventni arbitražni bot dizajniran za detekciju i egzekuciju cenovnih razlika između kripto menjačnica u realnom vremenu. Sistem koristi Event-Driven arhitekturu (WebSockets) koja omogućava reakciju u milisekundama, eliminišući potrebu za sporim polling-om.
+
+🛠️ Glavne funkcionalnosti (Detaljna analiza)
+
+1. Market & WebSocket Engine
+
+Brzina: Koristi WebSockets za Binance, Bybit i OKX. Bot ne čeka na podatke, on "sluša" svaku promenu cene.
+
+Asinhrona obrada: Arhitektura omogućava praćenje velikog broja parova istovremeno bez zagušenja memorije ili kašnjenja u obradi signala.
+
+2. Strategy Engine (Hetfield Edition)
+
+Strategija je mozak sistema koji filtrira buku i traži čisti profit:
+
+Realized Net PnL: Bot ne računa samo spread, već oduzima realne provizije (Fees) i simulirani Slippage pre nego što uopšte pošalje nalog.
+
+Testnet Hacks: Posebna logika koja omogućava testiranje na "mrtvim" menjačnicama (bypass za stare podatke i nulti volumen), što je ključno za razvoj pre puštanja na live market.
+
+Cooldown zaštita: Sprečava "mitraljez" efekat (spamovanje istog trejda) uvođenjem obaveznog perioda hlađenja po paru.
+
+3. Smart Inventory (Local Ledger)
+
+Stanje u realnom vremenu: Bot vodi sopstvenu "knjigu" stanja. Čim se trejd izvrši, on interno ažurira balans bez čekanja da mu menjačnica javi odgovor preko sporog REST API-ja.
+
+Smart Sizing: Bot proverava tri varijable pre određivanja količine:
+
+Koliko je korisnik zadao ($).
+
+Koliko menjačnica nudi na tom nivou cene (Liquidity).
+
+Koliko stvarno imaš u novčaniku (Balance).
+Bot uzima najmanju vrednost i automatski prilagođava ulog.
+
+4. Risk & Execution Service
+
+Atomic Execution: Pokušava da izvrši oba "lega" (kupovinu i prodaju) u istoj milisekundi.
+
+Orphan Recovery: Ako jedan deo trejda prođe, a drugi padne, bot aktivira "Panic Mode" i automatski zatvara poziciju kako bi zaštitio kapital.
+
+Kill Switch: Ako zareda previše neuspešnih trejdova ili dostigne dnevni limit gubitka, bot se gasi radi sigurnosti.
+
+📊 Analitika i metrika (Crna kutija)
+
+Bot u data/trade_audit.csv i na Dashboard-u prati parametre koji su ključni za profesionalni trading:
+
+Win Rate (%): Procenat uspešnih u odnosu na neuspešne pokušaje.
+
+Execution Latency (ms): Tačno vreme trajanja trejda (od signala do potvrde oba naloga).
+
+Realized Slippage (bps): Razlika u baznim poenima između cene koju smo videli na ekranu i one koju smo stvarno dobili na fill-u.
+
+Total Estimated Value: Dinamički proračun ukupnog portfolija na svim menjačnicama u realnom vremenu.
+
+📉 Trenutni limitatori (Šta još ne radimo)
+
+Migracija kapitala: Bot trenutno ne zna sam da prebaci USDT sa jedne menjačnice na drugu.
+
+Statični Fee-ovi: Provizije su ručno upisane u konfiguraciju (pretpostavljeno 0.1%).
+
+Taker Only: Bot koristi market ordere radi sigurnosti, što plaća većim provizijama.
+
+🚀 Sledeći koraci (Roadmap)
+
+Faza 1: Dinamička optimizacija
+
+[ ] Dynamic Fee Detection: Implementacija koda koji pri paljenju povlači tvoj tačan fee level sa svake menjačnice (BNB popust, VIP status).
+
+[ ] Volatility Filter: Automatsko povećanje spread praga tokom ekstremno volatilnih marketa radi zaštite od slippage-a.
+
+Faza 2: Upravljanje kapitalom
+
+[ ] Auto-Rebalancing: Logika za automatski transfer sredstava između menjačnica (withdrawal) kada balans postane previše jednostran.
+
+[ ] Smart Balancing: Bot sam predlaže prebacivanje novca na menjačnicu koja trenutno nudi češće arbitražne prilike.
+
+Faza 3: Produkcija i stabilnost
+
+[ ] VPS Optimizacija: Priprema za Linux servere smeštene u data centrima blizu menjačnica (Tokyo/London).
+
+[ ] Telegram Obaveštenja: Slanje poruka o profitima ili aktivaciji Kill Switch-a direktno na mobilni telefon.
+
+Status projekta: Sistem je stabilan, brutalno iskren u merenju profita i spreman za dalju nadogradnju risk menadžmenta.
